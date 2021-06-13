@@ -4,12 +4,14 @@ tick = 0.005
 PI = 3.14159
 
 pygame.init()
-pygame.display.set_caption('B&B forever', )
+pygame.display.set_caption('B&B forever')
+pygame.display.set_icon(pygame.image.load('icon2.png'))
 screenWidth, screenHeight = 1280, 720
 screen = pygame.display.set_mode((screenWidth, screenHeight))
 
 space = pymunk.Space()
 space.gravity = (0.0, 900.0)
+space.sleep_time_threshold = 100000
 s = 64
 
 
@@ -28,6 +30,7 @@ class Player:
         self.nextFrameTicks = 0
         self.frameMax = 0
         self.frameCounter = 0
+        self.animationStopped = False
 
         self.body = pymunk.Body()
         self.shape = pymunk.Poly(self.body, [(-s/3.2, -s/2), (s/3.2, -s/2), (-s/3.2, s/2), (s/3.2, s/2)])
@@ -39,22 +42,19 @@ class Player:
         self.collidesL = False
         self.collisionSkipRL = 0
 
-        self.collidesT = False
-        self.collidesB = False
-        self.collisionSkipTB = 0
-
         self.accelerating = False
         self.jumping = False
         self.mirrored = False
         self.onPlatform = False
-        self.onLedder = False
+        self.onladder = False
+        self.using = False
+        self.asleep = False
+        self.ladderMoved = 0
 
         self.dynamicColliding = False
         self.collisionSkip = 0
 
-        self.using = False
-        self.usingTimeout = 100
-        self.usingTicks = 0
+        self.ammo = 50
 
         self.boxM = False
         self.boxMTimeout = 5
@@ -63,12 +63,18 @@ class Player:
         self.setAnimation(list(animations.keys())[0])
 
     def use(self):
-        self.setAnimation('use')
-        self.using = False
-        self.usingTicks = self.usingTimeout
 
         if self.type == 1:
-            pass
+            if self.ammo > 0:
+                self.setAnimation('use')
+                m = 1 if self.mirrored else -1
+                Bullet((self.body.position[0] + 30 * m * -1, self.body.position[1] - 12), m * -1)
+                self.body.apply_force_at_local_point((m * 50000, 0))
+                self.ammo -= 1 
+        else:
+            self.setAnimation('use')
+        
+        self.using = True
 
     def setAnimation(self, name):
         self.currentAnimation = name
@@ -85,7 +91,11 @@ class Player:
     def nextFrame(self):
         self.frameCounter += 1
         if self.frameCounter > self.frameMax:
-            self.frameCounter = 0
+            if self.currentAnimation == 'use':
+                self.using = False
+                self.setAnimation('idle')
+            else:
+                self.frameCounter = 0
 
         frame = self.animations[self.currentAnimation][self.frameCounter]
         if len(frame) == 2:
@@ -102,50 +112,50 @@ class Player:
     
     def update(self, events):
         # movement
-        if self.type == 1 and self.boxM:
+        if self.boxM:
             self.boxMTicks -= 1
-            self.setAnimation('box')
-
             if not self.boxMTicks:
                 self.boxM = False
 
-        if self.using:
-            self.usingTicks -= 1
-
-            if not self.usingTicks:
-                self.using = False
+        # check if on ladder
+        self.onladder = False
+        if self.sprite:
+            p = self.body.position
+            for l in ladders:
+                if (l[0]-10 < p[0] < l[0] + 50) and\
+                    (l[1]-32 < p[1] < l[1] + 64):
+                    self.onladder = True
+                    break
 
         for event in events:
             # key pressed once
             if event.type == pygame.KEYDOWN:
                 # jump
-                if event.key == pygame.K_w and not self.jumping and not self.onLedder:
+                if event.key == pygame.K_w and not self.jumping and not self.onladder:
                     self.body.apply_force_at_local_point((0, -100000), (0,0))
                 # shoot
-                elif event.key == pygame.K_RETURN and not self.using:
+                elif event.key == pygame.K_RETURN and not self.using and not self.jumping and not self.accelerating and not self.onladder:
                     self.use()
-
-
-        # check if on ledder
-        self.onLedder = False
-        if self.sprite:
-            playerRect = self.sprite.get_rect()
-            for l in ledders:
-                if playerRect.colliderect(l):
-                    self.onLedder = True
-                    break
-
 
         # key down
         keys = pygame.key.get_pressed()
-        # ledder
-        if self.onLedder:
-            # upwards 
-            if keys[pygame.K_w] and not self.collidesT:
-                self.body.position = (self.body.position[0], self.body.position[1] - 0.3)
+        # ladder 
+        if self.onladder:
+            if self.ladderMoved < -10 or self.ladderMoved > 10:
+                self.ladderMoved = 0
+                self.nextFrame()
+
+            self.body.apply_force_at_local_point((0, -900))
+            # upwards
+            if keys[pygame.K_w]:
+                self.ladderMoved += 0.2
+                self.body._set_velocity((0, -100))
             # downwards
-            elif keys[pygame.K_s] and not self.collidesB:
-                self.body.position = (self.body.position[0], self.body.position[1] + 0.3)
+            elif keys[pygame.K_s]:
+                self.body.apply_force_at_local_point((0, 100))
+
+            else:
+                self.body._set_velocity((0, 0))
 
         # left / right
         if keys[pygame.K_a] or keys[pygame.K_d]:
@@ -164,13 +174,21 @@ class Player:
         else:
             self.accelerating = False
 
-        if self.body._get_velocity()[1] < 0.05 and self.body._get_velocity()[1] > -0.05:
+        # standing on the platform can cause strange effects
+        if self.body._get_velocity()[1] < 0.001 and self.body._get_velocity()[1] > -0.001:
             self.jumping = False
         else:
             self.jumping = True
 
-        if not self.using and not self.boxM:
-            if self.jumping:
+        if not self.using:
+            if self.boxM and self.type == 2:
+                if self.currentAnimation != 'box':
+                    self.setAnimation('box')
+            elif self.onladder:
+                if self.currentAnimation != 'ladder':
+                    self.setAnimation('ladder')
+                    self.nextFrame()
+            elif self.jumping and not self.boxM:
                 if self.currentAnimation != 'jump':
                     self.setAnimation('jump')
             elif self.accelerating:
@@ -181,13 +199,13 @@ class Player:
                     self.setAnimation('idle')
 
         # animation
-        if self.nextFrameTicks == 0:
-            self.nextFrame()
-        self.nextFrameTicks -= 1
+        if not self.onladder:
+            if self.nextFrameTicks == 0:
+                self.nextFrame()
+            self.nextFrameTicks -= 1
 
         # draw
         self.draw()
-
 
 class Platform:
     def __init__(self, movement, speed = [1, 0]):
@@ -232,8 +250,9 @@ class Platform:
         self.draw()
 
 class Box:
-    def __init__(self):
+    def __init__(self, mass = 100):
         self.body, self.shape, self.sprite = None, None, None
+        self.mass = mass
         self.id = len(boxes) + 20
 
         boxes.append(self)
@@ -242,14 +261,37 @@ class Box:
         self.body = body
         self.shape = shape
         self.sprite = sprite
+        self.shape.collision_type = self.id
 
         space.add_collision_handler(self.id, 2).pre_solve = lambda a, s, d: onCollisionBox(a, s, d, players[gameData['state']], self)
-        space.add_collision_handler(self.id, 0).pre_solve = onCollisionBoxFloor
+        space.add_collision_handler(self.id, 0).pre_solve = lambda a, s, d: onCollisionBoxFloor(a, s, d, self)
+
+    def draw(self):
+        angle = self.body.angle * (180 / PI)
+        screen.blit(pygame.transform.rotate(self.sprite[gameData['state']], angle), self.position)
 
     def step(self):
-        position = (self.body.position[0] - s / 2, self.body.position[1] - s / 2)
-        angle = self.body.angle * (180 / PI)
-        screen.blit(pygame.transform.rotate(self.sprite[gameData['state']], angle), position)
+        self.position = (self.body.position[0] - s / 2, self.body.position[1] - s / 2)
+        self.draw()
+
+class Bullet:
+    def __init__(self, position, direction):
+        self.sprite = normalizeImage('assets/bullet.png')
+        self.direction = direction
+        self.body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+        self.body.position = position
+        self.shape = pymunk.Poly(self.body, [(0, 0), (0, 8), (4, 0), (4, 8)])
+        self.shape.body_type = 8
+        self.destroy = False
+
+        kinematicBehaviours.append(self)
+
+    def draw(self):
+        screen.blit(self.sprite, self.body.position)
+
+    def step(self):
+        self.body.position = (self.body.position[0] + self.direction * 3, self.body.position[1])
+        self.draw()
 
 # -------------------------------------------------------------------------- #
 
@@ -271,9 +313,13 @@ def loadMap(fileName, tiles):
         first = 0
         for c in range(len(l)):
             position = (c * s, lc * s)
+            # ladders
+            if l[c] == 'L':
+                toDraw[1].append([tiles['L'][0], position])
+                ladders.append(position)
 
             # process each texture
-            if l[c] in tiles.keys():
+            elif l[c] in tiles.keys():
                 tile = tiles[l[c]]
                 collisionPoints = [(-s/2, -s/2), (s/2, -s/2), (-s/2, s/2), (s/2, s/2)]
                 if len(tile) > 2 and tile[2]:
@@ -281,8 +327,8 @@ def loadMap(fileName, tiles):
 
                 if tile[1] == 1:
                     # make line from tiles
-                    toDraw.append([tile[0], position])
-
+                    toDraw[0].append([tile[0], position])
+                    
                     if c < len(l) - 1 and l[c + 1] in tiles.keys() and tiles[l[c + 1]][1] == 1:
                         if not first:
                             first = position
@@ -315,16 +361,12 @@ def loadMap(fileName, tiles):
                     
                     else:
                         shape.collision_type = 6
-                        shape.mass = 10
+                        shape.friction = 1
+                        shape.mass = tile[3].mass
                         
                     tile[3].setp(body, shape, tile[0])
                     kinematicBehaviours.append(tile[3])
                     space.add(body, shape)
-
-            # ledders
-            elif l[c] == 'l':
-                toDraw.append([tiles['l'][0], position])
-                ledders.append(tiles['l'][0].get_rect())
 
             # set player position
             elif l[c] == 'p':
@@ -365,17 +407,27 @@ def changeLevel(level):
 
     if level:
         players = [Player(1, {
-            'idle': [[normalizeImage('player/1/idle/1.png')], [normalizeImage('player/1/idle/2.png')], [normalizeImage('player/1/idle/3.png')]],
-            'jump': [[normalizeImage('player/1/jump/1.png')], [normalizeImage('player/1/jump/2.png')], [normalizeImage('player/1/jump/3.png')]],
-            'walk': [[normalizeImage('player/1/walk/1.png'), 38], [normalizeImage('player/1/walk/2.png'), 38], [normalizeImage('player/1/walk/3.png'), 38], [normalizeImage('player/1/walk/4.png'), 38]]
+            'idle':   [[normalizeImage('player/1/idle/1.png')],     [normalizeImage('player/1/idle/2.png')],     [normalizeImage('player/1/idle/3.png')]],
+            'jump':   [[normalizeImage('player/1/jump/1.png')],     [normalizeImage('player/1/jump/2.png')],     [normalizeImage('player/1/jump/3.png')]],
+            'use':    [[normalizeImage('player/1/use/1.png')],      [normalizeImage('player/1/use/2.png'), 20]],
+            'ladder': [[normalizeImage('player/1/ladder/1.png')],   [normalizeImage('player/1/ladder/2.png')],   [normalizeImage('player/1/ladder/3.png')]],
+            'walk':   [[normalizeImage('player/1/walk/1.png'), 38], [normalizeImage('player/1/walk/2.png'), 38], [normalizeImage('player/1/walk/3.png'), 38], [normalizeImage('player/1/walk/4.png'), 38]]
             }), Player(2, {
-                'idle': [[normalizeImage('player/red.png')]]
+            'idle':   [[normalizeImage('player/2/idle/1.png')],     [normalizeImage('player/2/idle/2.png')],     [normalizeImage('player/2/idle/3.png')]],
+            'jump':   [[normalizeImage('player/2/jump/1.png')],     [normalizeImage('player/2/jump/2.png')],     [normalizeImage('player/2/jump/3.png')]],
+            'use':    [[normalizeImage('player/2/use/1.png')],      [normalizeImage('player/2/use/2.png')],      [normalizeImage('player/2/use/3.png')]],
+            'ladder': [[normalizeImage('player/2/ladder/1.png')],   [normalizeImage('player/2/ladder/2.png')],   [normalizeImage('player/2/ladder/3.png')]],
+            'walk':   [[normalizeImage('player/2/walk/1.png'), 38], [normalizeImage('player/2/walk/2.png'), 38], [normalizeImage('player/2/walk/3.png'), 38], [normalizeImage('player/2/walk/4.png'), 38]],
+            'box':    [[normalizeImage('player/2/box/1.png')],      [normalizeImage('player/2/box/2.png')],      [normalizeImage('player/2/box/3.png')],      [normalizeImage('player/2/box/4.png')]]
             }), Player(3, {
-                'idle': [[normalizeImage('player/blue.png')]]
+            'idle':   [[normalizeImage('player/3/idle/1.png')],     [normalizeImage('player/3/idle/2.png')],     [normalizeImage('player/3/idle/3.png')]],
+            'jump':   [[normalizeImage('player/3/jump/1.png')],     [normalizeImage('player/3/jump/2.png')],     [normalizeImage('player/3/jump/3.png')]],
+            'use':    [[normalizeImage('player/3/use/1.png')],      [normalizeImage('player/3/use/2.png')]],
+            'ladder': [[normalizeImage('player/3/ladder/1.png')],   [normalizeImage('player/3/ladder/2.png')],   [normalizeImage('player/3/ladder/3.png')]],
+            'walk':   [[normalizeImage('player/3/walk/1.png'), 38], [normalizeImage('player/3/walk/2.png'), 38], [normalizeImage('player/3/walk/3.png'), 38], [normalizeImage('player/3/walk/4.png'), 38]]
         })]
 
         loadMap(f'map{level}.txt', tiles)
-
     else:
         loadMenu()
 
@@ -387,20 +439,6 @@ def changeLevel(level):
 # -------------------------------------------------------------------------- #
 
 def onCollisionFloor(arbiter, space, data, player):
-    if player.onLedder:
-        if arbiter.normal[1] > 0.9:
-            player.collidesT = True
-            player.collisionSkipTB = 5
-        elif arbiter.normal[1] < -0.9:
-            player.collidesB = True
-            player.collisionSkipTB = 5
-
-        if player.collisionSkipTB > 0:
-            player.collisionSkipTB -= 1
-        else:
-            player.collidesT = False
-            player.collidesB = False
-
     arbiter.friction = 1
     arbiter.elasticity = 1
 
@@ -434,27 +472,33 @@ def onCollisionPlatform(arbiter, space, data, player):
 def onCollisionBox(arbiter, space, data, player, box):
     arbiter.friction = 1
 
-    if player.type == 1:
-        if arbiter.normal[0] > 0.9:
-            box.body.static = (box.body.static[0] - 6, box.body.static[1])
-            player.boxM = True
-            player.boxMTicks =  player.boxMTimeout
+    if arbiter.normal[0] > 0.9:
+        if player.type == 2:
+            box.body.apply_force_at_local_point((-100000, 0), (32, 32))
+        player.boxM = True
+        player.boxMTicks = player.boxMTimeout
 
-        elif arbiter.normal[0] < -0.9:
-            box.body.static = (box.body.static[0] + 6, box.body.static[1])
-            player.boxM = True
-            player.boxMTicks =  player.boxMTimeout
+    elif arbiter.normal[0] < -0.9:
+        if player.type == 2:
+            box.body.apply_force_at_local_point((100000, 0), (32, 32))
+        player.boxM = True
+        player.boxMTicks =  player.boxMTimeout
 
-    return False
+    return True
 
 def onCollisionBoxFloor(arbiter, space, data, box):
     arbiter.friction = 1
+    return True
+
+def onCollisionBullet(arbiter, space, data):
+    print(1)
     return True
 
 space.add_collision_handler(0, 2).pre_solve = lambda a, s, d: onCollisionFloor(a, s, d, players[gameData['state']])
 space.add_collision_handler(1, 2).pre_solve = lambda a, s, d: onCollisionWall(a, s, d, players[gameData['state']])
 space.add_collision_handler(2, 2).pre_solve = lambda a, s, d: False
 space.add_collision_handler(5, 2).pre_solve = lambda a, s, d: onCollisionPlatform(a, s, d, players[gameData['state']])
+space.add_collision_handler(8, 1).begin = onCollisionBullet
 
 # -------------------------------------------------------------------------- #
 
@@ -470,15 +514,16 @@ def normalizeImage(image, m = 4):
     return pygame.transform.scale(img, (w * m, h * m))
 
 def resetLevel():
-    global toDraw, kinematicBehaviours, ledders, menuButtons, boxes
+    global toDraw, kinematicBehaviours, ladders, menuButtons, boxes, electricity
     space = pymunk.Space()
     space.gravity = (0.0, 900.0)
     
-    toDraw = []
+    toDraw = [[], []]
     kinematicBehaviours = []
-    ledders = []
+    ladders = []
     menuButtons = []
     boxes = []
+    electricity = []
 
     for s in space.shapes:
         space.remove(s.body, s)
@@ -585,26 +630,30 @@ def game(events):
                     gameData['state'] = 1
                     players[2].body.position = players[1].body.position = players[0].body.position
 
-    for t in toDraw:
+    for t in toDraw[0]:
         screen.blit(t[0][gameData['state']], t[1])
 
     if gameData['paused']:
+        players[gameData['state']].draw()
         for b in kinematicBehaviours:
             b.draw()
-        players[gameData['state']].draw()
 
     else:
+        players[gameData['state']].update(events)
         for b in kinematicBehaviours:
             b.step()
-        players[gameData['state']].update(events)
 
-        space.step(tick)
+    for t in toDraw[1]:
+        screen.blit(t[0][gameData['state']], t[1])
 
-toDraw = []
+    space.step(tick)
+
+toDraw = [[], []]
 kinematicBehaviours = []
-ledders = []
+ladders = []
 players = []
 boxes = []
+electricity = []
 
 sounds, music = True, True
 
@@ -632,7 +681,7 @@ tiles = {
     '_': [[normalizeImage('assets/bar.png')], 2, [(0, 0), (64, 0), (64, 16), (0, 16)], Platform((1024, 0))],
     '-': [[normalizeImage('assets/bar.png')], 2, [(0, 0), (64, 0), (64, 16), (0, 16)], Platform((1024, 0))],
     'B': [[normalizeImage('assets/box.png')], 3, [(-24, -24), (24, -24), (-24, 24), (24, 24)], Box()],
-    #'L': [normalizeImage('assets/ledder.png')]
+    'L': [[normalizeImage('assets/ladder.png')], 8]
 }
 
 time1 = time.time()
