@@ -1,0 +1,11 @@
+##c##ccc#
+##ccc####
+#########
+####B####
+##p###-####
+#########
+ccccccccccccccccccccccccccccccccccc
+#########
+####_####
+#########
+ccccccccc
